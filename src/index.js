@@ -16,6 +16,7 @@ import {
   Routes,
   SlashCommandBuilder,
   StringSelectMenuBuilder,
+  MessageFlags,
 } from "discord.js";
 
 const PANEL_MARKER_PREFIX = "[PINDECK_IMAGE_PANEL]";
@@ -1235,7 +1236,7 @@ if (dryRun) {
         if (!permissionCheck.ok) {
           await interaction.reply({
             content: `I can't run this here yet. Missing: ${permissionCheck.missing.join(", ")}`,
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
           return;
         }
@@ -1244,12 +1245,12 @@ if (dryRun) {
           const preset = interaction.options.getString("preset", true);
           const image = imagesById.get(preset);
           if (!image) {
-            await interaction.reply({ content: "Preset not found.", ephemeral: true });
+            await interaction.reply({ content: "Preset not found.", flags: MessageFlags.Ephemeral });
             return;
           }
 
           await interaction.channel.send({ embeds: [buildImageEmbed(image, interaction.user.tag)] });
-          await interaction.reply({ content: `Posted **${image.label}**.`, ephemeral: true });
+          await interaction.reply({ content: `Posted **${image.label}**.`, flags: MessageFlags.Ephemeral });
           return;
         }
 
@@ -1258,7 +1259,7 @@ if (dryRun) {
             content: "Choose an image from the menu below:",
             components: [buildMenuRow(images)],
           });
-          await interaction.reply({ content: "Image menu posted.", ephemeral: true });
+          await interaction.reply({ content: "Image menu posted.", flags: MessageFlags.Ephemeral });
           return;
         }
 
@@ -1283,7 +1284,7 @@ if (dryRun) {
             }
           }
 
-          await interaction.reply({ content: "Reaction panel posted.", ephemeral: true });
+          await interaction.reply({ content: "Reaction panel posted.", flags: MessageFlags.Ephemeral });
           return;
         }
 
@@ -1292,7 +1293,7 @@ if (dryRun) {
             await interaction.reply({
               content:
                 "Ingest is not configured. Set PINDECK_INGEST_URL (or CONVEX_SITE_URL) and INGEST_API_KEY in .env.local.",
-              ephemeral: true,
+              flags: MessageFlags.Ephemeral,
             });
             return;
           }
@@ -1316,7 +1317,7 @@ if (dryRun) {
             if (!imageLinks.length) {
               await interaction.reply({
                 content: "No image URLs found in that message.",
-                ephemeral: true,
+                flags: MessageFlags.Ephemeral,
               });
               return;
             }
@@ -1356,12 +1357,12 @@ if (dryRun) {
             const permalink = buildMessagePermalink(targetMessage) || "selected message";
             await interaction.reply({
               content: `Imported ${imported}/${imageLinks.length} image(s) from ${permalink}.${postMeta.sref ? ` Parsed sref: ${postMeta.sref}.` : ""}${failures ? ` ${failures} failed.` : ""}`,
-              ephemeral: true,
+              flags: MessageFlags.Ephemeral,
             });
           } catch (error) {
             await interaction.reply({
               content: `Import failed: ${error.message}`,
-              ephemeral: true,
+              flags: MessageFlags.Ephemeral,
             });
           }
         }
@@ -1371,13 +1372,13 @@ if (dryRun) {
             await interaction.reply({
               content:
                 "Discord queue review is not configured. Set PINDECK_USER_ID, INGEST_API_KEY, and a queue endpoint.",
-              ephemeral: true,
+              flags: MessageFlags.Ephemeral,
             });
             return;
           }
 
           try {
-            await interaction.deferReply({ ephemeral: true });
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             const imageId = interaction.options.getString("image_id");
             const limit =
               interaction.options.getInteger("limit") || DEFAULT_QUEUE_REVIEW_LIMIT;
@@ -1419,7 +1420,7 @@ if (dryRun) {
             await interaction.reply({
               content:
                 "Discord moderation is not configured. Set PINDECK_USER_ID, INGEST_API_KEY, and a moderation endpoint.",
-              ephemeral: true,
+              flags: MessageFlags.Ephemeral,
             });
             return;
           }
@@ -1438,7 +1439,7 @@ if (dryRun) {
             subcommand === "generate" ? interaction.options.getString("detail") || undefined : undefined;
 
           try {
-            await interaction.deferReply({ ephemeral: true });
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             const result = await moderateDiscordImage({
               moderationEndpoint,
               ingestApiKey,
@@ -1470,7 +1471,7 @@ if (dryRun) {
           await interaction.reply({
             content:
               "Discord moderation is not configured. Set PINDECK_USER_ID, INGEST_API_KEY, and a moderation endpoint.",
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
           return;
         }
@@ -1489,12 +1490,12 @@ if (dryRun) {
 
             await interaction.reply({
               content: `GENERATE OK for \`${parsedVariation.imageId}\` (${parsedVariation.mode}, x${discordGenerateDefaultCount})${result?.message ? ` - ${result.message}` : ""}`,
-              ephemeral: true,
+              flags: MessageFlags.Ephemeral,
             });
           } catch (error) {
             await interaction.reply({
               content: `GENERATE failed for \`${parsedVariation.imageId}\` (${parsedVariation.mode}): ${error.message}`,
-              ephemeral: true,
+              flags: MessageFlags.Ephemeral,
             });
           }
           return;
@@ -1517,12 +1518,12 @@ if (dryRun) {
 
           await interaction.reply({
             content: `${parsed.action.toUpperCase()} OK for \`${parsed.imageId}\`${result?.message ? ` - ${result.message}` : ""}`,
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
         } catch (error) {
           await interaction.reply({
             content: `${parsed.action.toUpperCase()} failed for \`${parsed.imageId}\`: ${error.message}`,
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
         }
         return;
@@ -1532,7 +1533,7 @@ if (dryRun) {
         const preset = interaction.values[0];
         const image = imagesById.get(preset);
         if (!image) {
-          await interaction.reply({ content: "Preset not found.", ephemeral: true });
+          await interaction.reply({ content: "Preset not found.", flags: MessageFlags.Ephemeral });
           return;
         }
 
@@ -1540,18 +1541,18 @@ if (dryRun) {
         if (!permissionCheck.ok) {
           await interaction.reply({
             content: `I can't post in this channel yet. Missing: ${permissionCheck.missing.join(", ")}`,
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
           return;
         }
 
         await interaction.channel.send({ embeds: [buildImageEmbed(image, interaction.user.tag)] });
-        await interaction.reply({ content: `Posted **${image.label}**.`, ephemeral: true });
+        await interaction.reply({ content: `Posted **${image.label}**.`, flags: MessageFlags.Ephemeral });
       }
     } catch (error) {
       console.error("Interaction error:", error);
       if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: "Something went wrong processing that action.", ephemeral: true });
+        await interaction.reply({ content: "Something went wrong processing that action.", flags: MessageFlags.Ephemeral });
       }
     }
   });
