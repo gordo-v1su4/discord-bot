@@ -1,5 +1,6 @@
 services:
   bot:
+    image: discord-bot:latest
     build:
       context: .
     container_name: discord-bot
