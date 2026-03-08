@@ -266,7 +266,16 @@ function deriveEndpointFromBase({
 }) {
   const explicit = normalizeBaseUrl(explicitRaw);
   if (explicit) {
-    if (explicit.endsWith(`/${suffix}`)) return explicit;
+    // Accept both current and legacy route styles when explicitly configured.
+    if (
+      explicit.endsWith(`/${suffix}`) ||
+      explicit.endsWith("/discordQueue") ||
+      explicit.endsWith("/discordModerate") ||
+      explicit.endsWith("/discord/queue") ||
+      explicit.endsWith("/discord/moderation")
+    ) {
+      return explicit;
+    }
     return `${explicit}/${suffix}`;
   }
   if (fallbackIngestEndpoint) {
