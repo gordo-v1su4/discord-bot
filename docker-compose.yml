@@ -7,3 +7,17 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+  media-gateway:
+    image: discord-bot:latest
+    build:
+      context: .
+    container_name: pindeck-media-gateway
+    env_file:
+      - .env
+    environment:
+      PORT: 4545
+      HEALTH_PORT: 4545
+    command: ["bun", "src/media-gateway.js"]
+    ports:
+      - "4545:4545"
+    restart: unless-stopped

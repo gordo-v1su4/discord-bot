@@ -2,6 +2,8 @@
 
 Same as `pindeck/services/discord-bot` – standalone deploy. Gateway-based bot using `discord.js`. `/images` commands, ingest, queue moderation.
 
+This repo now also hosts the `sharp`-based media gateway used for new Pindeck image processing. Run both services together via `docker compose` on the bot machine.
+
 ## How it works
 
 - **Gateway**: Long-lived connection to Discord. Registers `/images` and handles interactions, reactions, etc.
@@ -24,6 +26,14 @@ Set these in `.env.local` (or `.env`). Same paths as pindeck: loads `.env.local`
 | `PINDECK_INGEST_URL` / `CONVEX_SITE_URL` | No | Defaults from Convex URL |
 | `PINDECK_DISCORD_QUEUE_URL`, `PINDECK_DISCORD_MODERATION_URL` | No | Queue/moderation endpoints |
 | `DISCORD_STATUS_WEBHOOK_URL` | No | Optional status webhook |
+| `MEDIA_GATEWAY_TOKEN` | For media gateway | Shared bearer token used by Pindeck backend |
+| `NEXTCLOUD_URL` | For media gateway | Base Nextcloud URL, e.g. `https://cloud.v1su4.dev` |
+| `NEXTCLOUD_USERNAME` | For media gateway | WebDAV/Nextcloud username |
+| `NEXTCLOUD_PASSWORD` | For media gateway | WebDAV/Nextcloud app password |
+| `NEXTCLOUD_BASE_FOLDER` | No | Storage root, default `/pindeck/media-uploads` |
+| `NEXTCLOUD_PUBLIC_BASE_URL` | No | Public host for browser URLs, defaults to `NEXTCLOUD_URL` |
+| `NEXTCLOUD_PUBLIC_SHARE_TOKEN` | Preferred | Shared public folder token for deterministic asset URLs |
+| `NEXTCLOUD_PUBLIC_SHARE_PATH` | Preferred | Shared folder root, default `pindeck/media-uploads` |
 
 ## Install and run
 
@@ -33,6 +43,31 @@ bun start
 ```
 
 From pindeck monorepo root you’d run `bun run discord:bot`; here you run `bun start` from this repo.
+
+## Media gateway
+
+The media gateway exposes:
+
+- `GET /health`
+- `POST /process-image`
+
+`POST /process-image` accepts one image upload and stores:
+
+- original
+- `320x180`
+- `640x360`
+- `1280x720`
+- `1920x1080`
+
+All non-original variants are generated with `sharp` using a `16:9` cover crop plus black-bar trim before upload to Nextcloud.
+
+Run both services together:
+
+```bash
+docker compose up -d --build
+```
+
+The media gateway listens on port `4545` by default.
 
 ## Bot invite
 
