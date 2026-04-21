@@ -25,6 +25,9 @@ const VAR_ACTION_PREFIX = "pindeck_var";
 const MAX_MENU_ITEMS = 25;
 const HARD_MAX_IMPORTED_IMAGES_PER_MESSAGE = 10;
 const DEFAULT_QUEUE_REVIEW_LIMIT = 5;
+const DEFAULT_HTTP_RETRY_ATTEMPTS = 3;
+const RETRYABLE_HTTP_STATUS_CODES = new Set([429, 502, 503, 504, 522, 524]);
+const MAX_LOG_BODY_LENGTH = 280;
 const VARIATION_MODE_OPTIONS = [
   { mode: "shot-variation", label: "Shot" },
   { mode: "action-shot", label: "Action" },
@@ -212,6 +215,127 @@ function parsePositiveInt(raw, fallback) {
   const parsed = Number.parseInt(String(raw || ""), 10);
   if (Number.isNaN(parsed) || parsed <= 0) return fallback;
   return parsed;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function compactWhitespace(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function truncateForLog(value, limit = MAX_LOG_BODY_LENGTH) {
+  const text = compactWhitespace(value);
+  if (!text) return "";
+  return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
+}
+
+function logStructured(level, event, data = {}) {
+  const payload = {
+    ts: new Date().toISOString(),
+    level,
+    event,
+    ...data,
+  };
+  const line = JSON.stringify(payload);
+  if (level === "error") {
+    console.error(line);
+    return;
+  }
+  if (level === "warn") {
+    console.warn(line);
+    return;
+  }
+  console.log(line);
+}
+
+function describeReaction(reaction) {
+  if (!reaction?.emoji) return "unknown";
+  if (reaction.emoji.id) {
+    return `<:${reaction.emoji.name || "emoji"}:${reaction.emoji.id}>`;
+  }
+  return reaction.emoji.name || "unknown";
+}
+
+async function fetchJsonWithRetry({
+  url,
+  options,
+  operation,
+  context = {},
+  maxAttempts = DEFAULT_HTTP_RETRY_ATTEMPTS,
+}) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      const rawText = await response.text().catch(() => "");
+
+      if (!response.ok) {
+        const bodySnippet = truncateForLog(rawText);
+        const retryable =
+          RETRYABLE_HTTP_STATUS_CODES.has(response.status) && attempt < maxAttempts;
+
+        logStructured(retryable ? "warn" : "error", `${operation}_http_error`, {
+          ...context,
+          attempt,
+          maxAttempts,
+          status: response.status,
+          retryable,
+          bodySnippet,
+          url,
+        });
+
+        if (retryable) {
+          await sleep(400 * attempt);
+          continue;
+        }
+
+        throw new Error(
+          `${operation} failed (${response.status}): ${bodySnippet || "no response body"}`
+        );
+      }
+
+      let parsed = {};
+      if (rawText) {
+        try {
+          parsed = JSON.parse(rawText);
+        } catch {
+          parsed = { rawText };
+        }
+      }
+
+      logStructured("info", `${operation}_ok`, {
+        ...context,
+        attempt,
+        maxAttempts,
+        status: response.status,
+        url,
+        imageId: parsed?.imageId,
+        userId: parsed?.userId,
+        itemCount: Array.isArray(parsed?.items) ? parsed.items.length : undefined,
+      });
+      return parsed;
+    } catch (error) {
+      const retryable = attempt < maxAttempts;
+      logStructured(retryable ? "warn" : "error", `${operation}_request_error`, {
+        ...context,
+        attempt,
+        maxAttempts,
+        retryable,
+        url,
+        message: error?.message || String(error),
+      });
+      lastError = error;
+      if (!retryable) {
+        throw error;
+      }
+      await sleep(400 * attempt);
+    }
+  }
+
+  throw lastError || new Error(`${operation} failed`);
 }
 
 function normalizeBaseUrl(raw) {
@@ -876,21 +1000,44 @@ async function ingestIntoPindeck({
     sourceUrl: sourceUrl || buildMessagePermalink(sourceMessage),
   };
 
-  const response = await fetch(ingestEndpoint, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${ingestApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
+  logStructured("info", "discord_ingest_dispatch", {
+    targetUserId: fallbackUserId || null,
+    actorUserId: actorUser.id,
+    actorUserTag: actorUser.tag,
+    sourceMessageId: sourceMessage.id,
+    channelId: sourceMessage.channelId,
+    guildId: sourceMessage.guildId || "dm",
+    externalId,
+    imageUrl,
+    sourceUrl: body.sourceUrl,
+    sref: sref || null,
+    ingestEndpoint,
   });
 
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Ingest failed (${response.status}): ${text}`);
-  }
-
-  return response.json().catch(() => ({}));
+  return fetchJsonWithRetry({
+    url: ingestEndpoint,
+    operation: "discord_ingest",
+    context: {
+      targetUserId: fallbackUserId || null,
+      actorUserId: actorUser.id,
+      actorUserTag: actorUser.tag,
+      sourceMessageId: sourceMessage.id,
+      channelId: sourceMessage.channelId,
+      guildId: sourceMessage.guildId || "dm",
+      externalId,
+      imageUrl,
+      sourceUrl: body.sourceUrl,
+      sref: sref || null,
+    },
+    options: {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${ingestApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    },
+  });
 }
 
 function truncateText(value, limit = 350) {
@@ -1005,25 +1152,27 @@ async function fetchDiscordQueue({
     );
   }
 
-  const response = await fetch(queueEndpoint, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${ingestApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+  const data = await fetchJsonWithRetry({
+    url: queueEndpoint,
+    operation: "discord_queue_fetch",
+    context: {
       userId,
       limit: limit || DEFAULT_QUEUE_REVIEW_LIMIT,
-      imageId: imageId || undefined,
-    }),
+      imageId: imageId || null,
+    },
+    options: {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${ingestApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        userId,
+        limit: limit || DEFAULT_QUEUE_REVIEW_LIMIT,
+        imageId: imageId || undefined,
+      }),
+    },
   });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Queue fetch failed (${response.status}): ${text}`);
-  }
-
-  const data = await response.json().catch(() => ({ items: [] }));
   return Array.isArray(data?.items) ? data.items : [];
 }
 
@@ -1043,28 +1192,32 @@ async function moderateDiscordImage({
     );
   }
 
-  const response = await fetch(moderationEndpoint, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${ingestApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+  return fetchJsonWithRetry({
+    url: moderationEndpoint,
+    operation: "discord_moderation",
+    context: {
       userId,
       imageId,
       action,
-      variationCount,
-      modificationMode,
-      variationDetail,
-    }),
+      variationCount: variationCount ?? null,
+      modificationMode: modificationMode ?? null,
+    },
+    options: {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${ingestApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        userId,
+        imageId,
+        action,
+        variationCount,
+        modificationMode,
+        variationDetail,
+      }),
+    },
   });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Moderation failed (${response.status}): ${text}`);
-  }
-
-  return response.json().catch(() => ({}));
 }
 
 function printStartupChecklist({
@@ -1624,7 +1777,12 @@ if (dryRun) {
       // New ingest behavior: custom reaction on any image message imports into Pindeck
       if (!isReactionIngestTrigger(reaction, ingestTriggers)) return;
       if (!ingestEndpoint || !ingestApiKey) {
-        console.warn("Ingest trigger ignored: missing PINDECK_INGEST_URL/INGEST_API_KEY");
+        logStructured("warn", "reaction_ingest_skipped_not_configured", {
+          reaction: describeReaction(reaction),
+          messageId: message.id,
+          channelId: message.channelId,
+          guildId: message.guildId || "dm",
+        });
         return;
       }
 
@@ -1632,6 +1790,19 @@ if (dryRun) {
       const imageLinks = (
         await collectImageLinksForImport(message, postMeta.sourcePostUrl, ingestFetchExternal)
       ).slice(0, ingestMaxImagesPerPost);
+      logStructured("info", "reaction_ingest_triggered", {
+        reaction: describeReaction(reaction),
+        actorUserId: user.id,
+        actorUserTag: user.tag,
+        targetUserId: fallbackIngestUserId || null,
+        messageId: message.id,
+        channelId: message.channelId,
+        guildId: message.guildId || "dm",
+        sourceUrl: postMeta.sourcePostUrl || null,
+        sref: postMeta.sref || null,
+        extractedImageCount: imageLinks.length,
+        imageUrls: imageLinks.slice(0, 3),
+      });
       if (!imageLinks.length) return;
       const tagsForImport = [...new Set([
         ...ingestDefaultTags,
@@ -1664,7 +1835,19 @@ if (dryRun) {
           });
           imported += 1;
         } catch (error) {
-          console.error("Reaction ingest failed:", error.message);
+          logStructured("error", "reaction_ingest_failed", {
+            reaction: describeReaction(reaction),
+            actorUserId: user.id,
+            actorUserTag: user.tag,
+            targetUserId: fallbackIngestUserId || null,
+            messageId: message.id,
+            channelId: message.channelId,
+            guildId: message.guildId || "dm",
+            sourceUrl: postMeta.sourcePostUrl || null,
+            externalId,
+            imageUrl,
+            message: error?.message || String(error),
+          });
         }
       }
 
