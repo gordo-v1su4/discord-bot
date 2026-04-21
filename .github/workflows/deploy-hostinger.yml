@@ -1,6 +1,6 @@
-# Deploy to Hostinger VPS on every push to main.
-# Requires GitHub repo secrets: HOSTINGER_HOST, HOSTINGER_USER, HOSTINGER_SSH_KEY
-# Optional: HOSTINGER_APP_PATH (default: ~/discord-bot-pinterest)
+# Deploy the discord-bot stack to Hostinger on every push to main.
+# Required GitHub repo secret: HOSTINGER_SSH_KEY
+# Optional GitHub repo secret: HOSTINGER_APP_PATH (defaults to /root/discord-bot)
 name: Deploy to Hostinger
 
 on:
@@ -14,30 +14,29 @@ jobs:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.HOSTINGER_HOST }}
-          username: ${{ secrets.HOSTINGER_USER }}
+          host: 187.77.8.227
+          username: root
           key: ${{ secrets.HOSTINGER_SSH_KEY }}
           script_stop: true
           script: |
             set -e
             APP_PATH="${{ secrets.HOSTINGER_APP_PATH }}"
-            [ -z "$APP_PATH" ] && APP_PATH="$HOME/discord-bot-pinterest"
+            [ -z "$APP_PATH" ] && APP_PATH="/root/discord-bot"
             if [ ! -d "$APP_PATH" ]; then
-              echo "App path $APP_PATH not found. Clone the repo there first (e.g. git clone <repo-url> $APP_PATH) and add .env."
+              echo "App path $APP_PATH not found. Clone the repo there first and add .env."
               exit 1
             fi
+
             cd "$APP_PATH"
             git fetch origin main
-            git reset --hard origin/main
-            docker build -t discord-bot-pinterest:latest .
-            docker stop discord-bot-pinterest 2>/dev/null || true
-            docker rm discord-bot-pinterest 2>/dev/null || true
-            if [ -f .env ]; then
-              docker run -d --restart unless-stopped --name discord-bot-pinterest -p 8080:8080 --env-file .env discord-bot-pinterest:latest
-            elif [ -f .env.local ]; then
-              docker run -d --restart unless-stopped --name discord-bot-pinterest -p 8080:8080 --env-file .env.local discord-bot-pinterest:latest
-            else
-              echo "No .env or .env.local. Create one on server with DISCORD_TOKEN, DISCORD_CLIENT_ID, etc."
+            git checkout main
+            git pull --ff-only origin main
+
+            if [ ! -f .env ]; then
+              echo "Missing $APP_PATH/.env on server."
               exit 1
             fi
+
+            docker compose up -d --build
+            docker compose ps
             docker image prune -f
