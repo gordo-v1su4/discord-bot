@@ -35,6 +35,9 @@ Set these in `.env.local` (or `.env`). Same paths as pindeck: loads `.env.local`
 | `NEXTCLOUD_PUBLIC_SHARE_TOKEN` | Preferred | Shared public folder token for deterministic asset URLs |
 | `NEXTCLOUD_PUBLIC_SHARE_PATH` | Preferred | Shared folder root, default `pindeck/media-uploads` |
 
+The media gateway also accepts the existing Pindeck/Convex variable names as aliases:
+`NEXTCLOUD_WEBDAV_BASE_URL`, `NEXTCLOUD_WEBDAV_USER`, `NEXTCLOUD_WEBDAV_APP_PASSWORD`, and `NEXTCLOUD_UPLOAD_PREFIX`.
+
 ## Install and run
 
 ```bash

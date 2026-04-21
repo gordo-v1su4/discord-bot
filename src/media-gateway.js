@@ -9,17 +9,50 @@ const upload = multer({
   limits: { fileSize: 40 * 1024 * 1024 },
 });
 
+const trimTrailingSlash = (value) => String(value || "").replace(/\/+$/, "");
+
+const normalizePath = (value) =>
+  String(value || "")
+    .split("/")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join("/");
+
+const deriveNextcloudBaseUrl = (value) => {
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    const remotePhpIndex = parsed.pathname.indexOf("/remote.php/");
+    const basePath =
+      remotePhpIndex >= 0 ? parsed.pathname.slice(0, remotePhpIndex) : parsed.pathname;
+    return trimTrailingSlash(`${parsed.origin}${basePath}`);
+  } catch {
+    return trimTrailingSlash(value);
+  }
+};
+
 const {
   PORT = 4545,
   MEDIA_GATEWAY_TOKEN,
-  NEXTCLOUD_URL,
-  NEXTCLOUD_USERNAME,
-  NEXTCLOUD_PASSWORD,
-  NEXTCLOUD_BASE_FOLDER = "/pindeck/media-uploads",
+  NEXTCLOUD_URL: NEXTCLOUD_URL_RAW,
+  NEXTCLOUD_USERNAME: NEXTCLOUD_USERNAME_RAW,
+  NEXTCLOUD_PASSWORD: NEXTCLOUD_PASSWORD_RAW,
+  NEXTCLOUD_WEBDAV_BASE_URL,
+  NEXTCLOUD_WEBDAV_USER,
+  NEXTCLOUD_WEBDAV_APP_PASSWORD,
+  NEXTCLOUD_BASE_FOLDER,
+  NEXTCLOUD_UPLOAD_PREFIX,
   NEXTCLOUD_PUBLIC_BASE_URL,
   NEXTCLOUD_PUBLIC_SHARE_TOKEN,
   NEXTCLOUD_PUBLIC_SHARE_PATH,
 } = process.env;
+
+const NEXTCLOUD_URL =
+  NEXTCLOUD_URL_RAW || deriveNextcloudBaseUrl(NEXTCLOUD_WEBDAV_BASE_URL);
+const NEXTCLOUD_USERNAME = NEXTCLOUD_USERNAME_RAW || NEXTCLOUD_WEBDAV_USER;
+const NEXTCLOUD_PASSWORD = NEXTCLOUD_PASSWORD_RAW || NEXTCLOUD_WEBDAV_APP_PASSWORD;
+const RESOLVED_NEXTCLOUD_BASE_FOLDER =
+  NEXTCLOUD_BASE_FOLDER || NEXTCLOUD_UPLOAD_PREFIX || "/pindeck/media-uploads";
 
 const VARIANTS = {
   preview: { width: 640, height: 360, suffix: "preview", quality: 78 },
@@ -36,15 +69,6 @@ if (!NEXTCLOUD_URL || !NEXTCLOUD_USERNAME || !NEXTCLOUD_PASSWORD) {
 }
 
 app.use(express.json({ limit: "2mb" }));
-
-const trimTrailingSlash = (value) => String(value || "").replace(/\/+$/, "");
-
-const normalizePath = (value) =>
-  String(value || "")
-    .split("/")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .join("/");
 
 const encodePath = (value) =>
   normalizePath(value)
@@ -91,7 +115,7 @@ const safeFilename = (name, fallbackExt = "png") => {
 };
 
 const rootSharePath = normalizePath(
-  NEXTCLOUD_PUBLIC_SHARE_PATH || NEXTCLOUD_BASE_FOLDER
+  NEXTCLOUD_PUBLIC_SHARE_PATH || RESOLVED_NEXTCLOUD_BASE_FOLDER
 );
 
 const buildPublicUrl = (path) => {
@@ -206,7 +230,7 @@ app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
     const yyyyMm = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
     const baseFolder =
       normalizePath(folder) ||
-      normalizePath(`${NEXTCLOUD_BASE_FOLDER}/${userId}/${yyyyMm}`);
+      normalizePath(`${RESOLVED_NEXTCLOUD_BASE_FOLDER}/${userId}/${yyyyMm}`);
     const filename = safeFilename(
       req.file.originalname,
       req.file.mimetype.split("/")[1] || "png"
@@ -244,7 +268,7 @@ app.post("/import", requireAuth, async (req, res) => {
     const yyyyMm = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
     const baseFolder =
       normalizePath(folder) ||
-      normalizePath(`${NEXTCLOUD_BASE_FOLDER}/${userId}/${yyyyMm}`);
+      normalizePath(`${RESOLVED_NEXTCLOUD_BASE_FOLDER}/${userId}/${yyyyMm}`);
     const ext = contentType.split("/")[1] || "png";
     const resolvedName =
       filename || `import-${crypto.randomBytes(6).toString("hex")}.${ext}`;

@@ -9,9 +9,9 @@
     "dry-run": "DISCORD_DRY_RUN=1 bun src/index.js"
   },
   "dependencies": {
-    "discord.js": "^14.16.3",
-    "express": "^4.21.2",
-    "multer": "^1.4.5-lts.2",
+    "discord.js": "^14.26.3",
+    "express": "^5.2.1",
+    "multer": "^2.1.1",
     "sharp": "^0.34.5"
   },
   "engines": {
