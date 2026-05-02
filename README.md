@@ -14,6 +14,8 @@ This repo now also hosts the `sharp`-based media gateway used for new Pindeck im
 
 Set these in `.env.local` (or `.env`). Same paths as pindeck: loads `.env.local`, `.env` from cwd, then `../../.env.local`, `../.env.local`, etc., so you can reuse pindeck’s root `.env.local`.
 
+**Convex HTTP base for this deployment:** `https://convex-site.serving.cloud` — use the `PINDECK_*` / `CONVEX_SITE_URL` / `VITE_CONVEX_SITE_URL` values shown in [`.env.example`](.env.example) (or set only `CONVEX_SITE_URL` and let the bot derive ingest, queue, and moderation paths — see `src/index.js`).
+
 | Variable | Required | Description |
 |---------|----------|-------------|
 | `DISCORD_TOKEN` | Yes | Bot token from Discord Developer Portal |
