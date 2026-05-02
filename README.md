@@ -81,15 +81,26 @@ The media gateway listens on port `4545` by default.
 
 ## Hostinger deploy
 
-1. Clone, add `.env` or `.env.local` with required vars.
-2. GitHub Actions: secrets `HOSTINGER_HOST`, `HOSTINGER_USER`, `HOSTINGER_SSH_KEY`.
-3. Push to `main` → workflow builds Docker image and runs the Gateway bot (no HTTP port; connects outbound to Discord).
+1. On the VPS: clone this repo (e.g. `/root/discord-bot`), add `.env` with required vars (file is gitignored).
+2. In GitHub: **Actions** secrets — `HOSTINGER_HOST`, `HOSTINGER_USER`, `HOSTINGER_SSH_KEY` (required); `HOSTINGER_APP_PATH` optional if not `/root/discord-bot`.
+3. Push to `main` → workflow SSHs in, resets the clone to `origin/main`, runs `docker compose build` and `docker compose up -d` (bot + media gateway on `4545`).
+
+Legacy single-container runs used the name `discord-bot-pinterest`; stop or remove that container if you still have it so it does not fight `docker compose` for the same Discord token.
 
 ## Docker
 
+Preferred: use Compose (bot health on **8080**, media gateway on **4545**):
+
 ```bash
-docker build -t discord-bot-pinterest .
-docker run -d --restart unless-stopped --name discord-bot-pinterest -p 8080:8080 --env-file .env discord-bot-pinterest
+docker compose up -d --build
 ```
 
-- **Health check**: `GET http://your-server:8080/health` → `{"ok":true,"service":"pindeck-discord-bot"}`. Docker HEALTHCHECK uses this.
+Ad-hoc single container (bot only):
+
+```bash
+docker build -t discord-bot:latest .
+docker run -d --restart unless-stopped --name discord-bot -p 8080:8080 --env-file .env discord-bot:latest
+```
+
+- **Bot health check**: `GET http://your-server:8080/health` → `{"ok":true,"service":"pindeck-discord-bot"}`.
+- **Media gateway**: `GET http://your-server:4545/health` (Compose sets `HEALTH_PORT=4545` for that service).

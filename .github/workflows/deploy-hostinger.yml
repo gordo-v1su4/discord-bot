@@ -1,6 +1,13 @@
-# Deploy the discord-bot stack to Hostinger on every push to main.
-# Required GitHub repo secret: HOSTINGER_SSH_KEY
-# Optional GitHub repo secret: HOSTINGER_APP_PATH (defaults to /root/discord-bot)
+# Deploy bot + media-gateway (docker compose) on every push to main.
+#
+# GitHub repo secrets (Settings → Secrets and variables → Actions):
+#   HOSTINGER_HOST    – VPS host (public IP, hostname, or Tailscale IP)
+#   HOSTINGER_USER    – SSH user (e.g. root)
+#   HOSTINGER_SSH_KEY – private key (PEM), pasted as multiline secret
+# Optional:
+#   HOSTINGER_APP_PATH – repo directory on the VPS (default: /root/discord-bot)
+#
+# One-time on the server: clone repo, add .env (gitignored), ensure Docker + Compose plugin.
 name: Deploy to Hostinger
 
 on:
@@ -12,31 +19,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@v1.2.0
         with:
-          host: 187.77.8.227
-          username: root
+          host: ${{ secrets.HOSTINGER_HOST }}
+          username: ${{ secrets.HOSTINGER_USER }}
           key: ${{ secrets.HOSTINGER_SSH_KEY }}
+          command_timeout: 20m
           script_stop: true
           script: |
             set -e
             APP_PATH="${{ secrets.HOSTINGER_APP_PATH }}"
             [ -z "$APP_PATH" ] && APP_PATH="/root/discord-bot"
-            if [ ! -d "$APP_PATH" ]; then
-              echo "App path $APP_PATH not found. Clone the repo there first and add .env."
+            if [ ! -d "$APP_PATH/.git" ]; then
+              echo "App path $APP_PATH is missing or not a git clone. Clone the repo there and add .env."
               exit 1
             fi
 
             cd "$APP_PATH"
             git fetch origin main
             git checkout main
-            git pull --ff-only origin main
+            # Deploy servers should match origin; avoids stuck --ff-only when history diverged.
+            git reset --hard origin/main
 
             if [ ! -f .env ]; then
               echo "Missing $APP_PATH/.env on server."
               exit 1
             fi
 
-            docker compose up -d --build
+            docker compose build --pull
+            docker compose up -d --remove-orphans
             docker compose ps
             docker image prune -f
