@@ -49,8 +49,8 @@ const {
 
 const NEXTCLOUD_URL =
   NEXTCLOUD_URL_RAW || deriveNextcloudBaseUrl(NEXTCLOUD_WEBDAV_BASE_URL);
-const NEXTCLOUD_USERNAME = NEXTCLOUD_USERNAME_RAW || NEXTCLOUD_WEBDAV_USER;
-const NEXTCLOUD_PASSWORD = NEXTCLOUD_PASSWORD_RAW || NEXTCLOUD_WEBDAV_APP_PASSWORD;
+const NEXTCLOUD_USERNAME = NEXTCLOUD_WEBDAV_USER || NEXTCLOUD_USERNAME_RAW;
+const NEXTCLOUD_PASSWORD = NEXTCLOUD_WEBDAV_APP_PASSWORD || NEXTCLOUD_PASSWORD_RAW;
 const RESOLVED_NEXTCLOUD_BASE_FOLDER =
   NEXTCLOUD_BASE_FOLDER || NEXTCLOUD_UPLOAD_PREFIX || "/pindeck/media-uploads";
 
@@ -108,6 +108,17 @@ const toWebdavUrl = (path) =>
 const toOcsUrl = () =>
   `${nextcloudBaseUrl}/ocs/v2.php/apps/files_sharing/api/v1/shares`;
 
+const folderExists = async (path) => {
+  const res = await fetch(toWebdavUrl(path), {
+    method: "PROPFIND",
+    headers: {
+      ...authHeaders(),
+      Depth: "0",
+    },
+  });
+  return [200, 207].includes(res.status);
+};
+
 const safeFilename = (name, fallbackExt = "png") => {
   const base = String(name || "file").replace(/[^a-zA-Z0-9._-]/g, "_");
   if (base.includes(".")) return base;
@@ -144,6 +155,9 @@ const ensureFolder = async (folderPath) => {
     });
     if (![201, 301, 302, 403, 405].includes(res.status)) {
       const text = await res.text().catch(() => "");
+      if (res.status === 401 && await folderExists(current)) {
+        continue;
+      }
       throw new Error(`MKCOL failed (${res.status}): ${text.slice(0, 200)}`);
     }
   }
@@ -191,7 +205,7 @@ const uploadBuffer = async (path, contentType, buffer) => {
 
   if (!uploadRes.ok) {
     const text = await uploadRes.text().catch(() => "");
-    throw new Error(`Upload failed (${uploadRes.status}): ${text.slice(0, 300)}`);
+    throw new Error(`Upload failed (${uploadRes.status}) for ${path}: ${text.slice(0, 300)}`);
   }
 
   return buildPublicUrl(path) || (await shareFile(path));
@@ -297,9 +311,10 @@ app.post("/process-image", requireAuth, upload.single("file"), async (req, res) 
     const month = String(now.getUTCMonth() + 1).padStart(2, "0");
     const day = String(now.getUTCDate()).padStart(2, "0");
     const monthDay = `${month}_${day}`;
-    const resolvedFolder =
+    const requestedFolder =
       normalizePath(folder) ||
       normalizePath(`${NEXTCLOUD_BASE_FOLDER}/${yyyy}/${monthDay}`);
+    const resolvedFolder = normalizePath(`${requestedFolder}/gateway-v2`);
     const ext =
       String(originalExt || "").replace(/^\./, "") ||
       req.file.mimetype.split("/")[1] ||
@@ -309,10 +324,10 @@ app.post("/process-image", requireAuth, upload.single("file"), async (req, res) 
       `-${crypto.randomBytes(3).toString("hex")}`;
 
     const originalPath = `${resolvedFolder}/original/${safeFilename(`${fileBase}.${ext}`)}`;
-    const previewPath = `${resolvedFolder}/preview/${fileBase}-preview.webp`;
-    const smallPath = `${resolvedFolder}/low/${fileBase}-${VARIANTS.small.suffix}.webp`;
-    const mediumPath = `${resolvedFolder}/high/${fileBase}-${VARIANTS.medium.suffix}.webp`;
-    const largePath = `${resolvedFolder}/high/${fileBase}-${VARIANTS.large.suffix}.webp`;
+    const previewPath = `${resolvedFolder}/previews/${fileBase}-preview.webp`;
+    const smallPath = `${resolvedFolder}/low-res/${fileBase}-${VARIANTS.small.suffix}.webp`;
+    const mediumPath = `${resolvedFolder}/high-res/${fileBase}-${VARIANTS.medium.suffix}.webp`;
+    const largePath = `${resolvedFolder}/high-res/${fileBase}-${VARIANTS.large.suffix}.webp`;
 
     const [previewBuffer, smallBuffer, mediumBuffer, largeBuffer] = await Promise.all([
       createVariantBuffer(req.file.buffer, VARIANTS.preview),

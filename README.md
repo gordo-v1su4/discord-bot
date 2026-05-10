@@ -87,6 +87,13 @@ The media gateway listens on port `4545` by default.
 
 Legacy single-container runs used the name `discord-bot-pinterest`; stop or remove that container if you still have it so it does not fight `docker compose` for the same Discord token.
 
+Current server:
+
+- Hostname: `srv1353991`
+- Public IP: `187.77.8.227`
+- SSH user: `root`
+- App path: `/root/discord-bot`
+
 ## Docker
 
 Preferred: use Compose (bot health on **8080**, media gateway on **4545**):
@@ -104,3 +111,6 @@ docker run -d --restart unless-stopped --name discord-bot -p 8080:8080 --env-fil
 
 - **Bot health check**: `GET http://your-server:8080/health` → `{"ok":true,"service":"pindeck-discord-bot"}`.
 - **Media gateway**: `GET http://your-server:4545/health` (Compose sets `HEALTH_PORT=4545` for that service).
+- `discord-bot` runs as the long-lived Discord worker container.
+- `pindeck-media-gateway` exposes `GET /health` on port `4545`.
+- `docker compose ps` is the quickest way to verify both services after a deploy.
