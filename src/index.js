@@ -108,7 +108,15 @@ function normalizeEmoji(emoji) {
 
 function emojiMatchKeys(emoji) {
   if (!emoji) return new Set();
-  const keys = new Set([emoji]);
+  const aliases = {
+    ":pushpin:": "📌",
+    pushpin: "📌",
+    "push pin": "📌",
+    ":inbox_tray:": "📥",
+    inbox_tray: "📥",
+  };
+  const normalized = aliases[String(emoji).trim().toLowerCase()] || emoji;
+  const keys = new Set([emoji, normalized]);
   const custom = emoji.match(/^<a?:([a-zA-Z0-9_]+):(\d+)>$/);
   if (custom) {
     keys.add(`id:${custom[2]}`);
@@ -426,7 +434,7 @@ function deriveDiscordModerationEndpoint(fallbackIngestEndpoint) {
 }
 
 function parseEmojiTriggers(raw) {
-  const values = parseCsv(raw || "📥");
+  const values = parseCsv(raw || "📌");
   return values.map((value) => ({
     raw: value,
     keys: emojiMatchKeys(value),

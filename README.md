@@ -2,7 +2,7 @@
 
 Same as `pindeck/services/discord-bot` – standalone deploy. Gateway-based bot using `discord.js`. `/images` commands, ingest, queue moderation.
 
-This repo now also hosts the `sharp`-based media gateway used for new Pindeck image processing. Run both services together via `docker compose` on the bot machine.
+This repo now also hosts a media-gateway compatibility proxy for new Pindeck image processing. It forwards all writes to the RustFS media API.
 
 ## How it works
 
@@ -28,17 +28,12 @@ Set these in `.env.local` (or `.env`). Same paths as pindeck: loads `.env.local`
 | `PINDECK_INGEST_URL` / `CONVEX_SITE_URL` | No | Defaults from Convex URL |
 | `PINDECK_DISCORD_QUEUE_URL`, `PINDECK_DISCORD_MODERATION_URL` | No | Queue/moderation endpoints |
 | `DISCORD_STATUS_WEBHOOK_URL` | No | Optional status webhook |
-| `MEDIA_GATEWAY_TOKEN` | For media gateway | Shared bearer token used by Pindeck backend |
-| `NEXTCLOUD_URL` | For media gateway | Base Nextcloud URL, e.g. `https://cloud.v1su4.dev` |
-| `NEXTCLOUD_USERNAME` | For media gateway | WebDAV/Nextcloud username |
-| `NEXTCLOUD_PASSWORD` | For media gateway | WebDAV/Nextcloud app password |
-| `NEXTCLOUD_BASE_FOLDER` | No | Storage root, default `/pindeck/media-uploads` |
-| `NEXTCLOUD_PUBLIC_BASE_URL` | No | Public host for browser URLs, defaults to `NEXTCLOUD_URL` |
-| `NEXTCLOUD_PUBLIC_SHARE_TOKEN` | Preferred | Shared public folder token for deterministic asset URLs |
-| `NEXTCLOUD_PUBLIC_SHARE_PATH` | Preferred | Shared folder root, default `pindeck/media-uploads` |
+| `MEDIA_GATEWAY_TOKEN` | For media gateway | Bearer token accepted by this compatibility gateway |
+| `MEDIA_API_TOKEN` | For RustFS media API | Bearer token used when forwarding writes to RustFS. Falls back to `MEDIA_GATEWAY_TOKEN` if omitted |
+| `RUSTFS_MEDIA_API_URL` / `MEDIA_API_URL` | No | RustFS media API base URL, default `https://media.v1su4.dev` |
+| `MEDIA_GATEWAY_BUCKET` | No | RustFS bucket for Pindeck uploads, default `pindeck` |
 
-The media gateway also accepts the existing Pindeck/Convex variable names as aliases:
-`NEXTCLOUD_WEBDAV_BASE_URL`, `NEXTCLOUD_WEBDAV_USER`, `NEXTCLOUD_WEBDAV_APP_PASSWORD`, and `NEXTCLOUD_UPLOAD_PREFIX`.
+Storage is RustFS-only. Configure the media API variables above for all new writes.
 
 ## Install and run
 
@@ -56,7 +51,7 @@ The media gateway exposes:
 - `GET /health`
 - `POST /process-image`
 
-`POST /process-image` accepts one image upload and stores:
+`POST /process-image` accepts one image upload and forwards it to the RustFS media API, which stores:
 
 - original
 - `320x180`
@@ -64,7 +59,7 @@ The media gateway exposes:
 - `1280x720`
 - `1920x1080`
 
-All non-original variants are generated with `sharp` using a `16:9` cover crop plus black-bar trim before upload to Nextcloud.
+All durable URLs returned to Pindeck should use the RustFS public shape: `https://s3.v1su4.dev/pindeck/media-uploads/...`.
 
 Run both services together:
 

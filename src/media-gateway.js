@@ -1,7 +1,5 @@
 import express from "express";
 import multer from "multer";
-import crypto from "crypto";
-import sharp from "sharp";
 
 const app = express();
 const upload = multer({
@@ -9,373 +7,217 @@ const upload = multer({
   limits: { fileSize: 40 * 1024 * 1024 },
 });
 
-const trimTrailingSlash = (value) => String(value || "").replace(/\/+$/, "");
+const {
+  PORT = 4545,
+  MEDIA_GATEWAY_TOKEN,
+  MEDIA_API_TOKEN,
+  RUSTFS_MEDIA_API_URL,
+  MEDIA_API_URL,
+  MEDIA_GATEWAY_BUCKET = "pindeck",
+} = process.env;
 
-const normalizePath = (value) =>
-  String(value || "")
+const upstreamBaseUrl = String(
+  RUSTFS_MEDIA_API_URL || MEDIA_API_URL || "https://media.v1su4.dev"
+).replace(/\/+$/, "");
+const upstreamToken = MEDIA_API_TOKEN || MEDIA_GATEWAY_TOKEN;
+
+app.use(express.json({ limit: "4mb" }));
+
+function authToken(req) {
+  const header = req.headers.authorization || "";
+  if (header.startsWith("Bearer ")) return header.slice(7);
+  return req.headers["x-media-gateway-token"] || "";
+}
+
+function requireAuth(req, res, next) {
+  if (!MEDIA_GATEWAY_TOKEN || authToken(req) !== MEDIA_GATEWAY_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+}
+
+function normalizePath(value) {
+  return String(value || "")
     .split("/")
     .map((part) => part.trim())
     .filter(Boolean)
     .join("/");
-
-const deriveNextcloudBaseUrl = (value) => {
-  if (!value) return "";
-  try {
-    const parsed = new URL(value);
-    const remotePhpIndex = parsed.pathname.indexOf("/remote.php/");
-    const basePath =
-      remotePhpIndex >= 0 ? parsed.pathname.slice(0, remotePhpIndex) : parsed.pathname;
-    return trimTrailingSlash(`${parsed.origin}${basePath}`);
-  } catch {
-    return trimTrailingSlash(value);
-  }
-};
-
-const {
-  PORT = 4545,
-  MEDIA_GATEWAY_TOKEN,
-  NEXTCLOUD_URL: NEXTCLOUD_URL_RAW,
-  NEXTCLOUD_USERNAME: NEXTCLOUD_USERNAME_RAW,
-  NEXTCLOUD_PASSWORD: NEXTCLOUD_PASSWORD_RAW,
-  NEXTCLOUD_WEBDAV_BASE_URL,
-  NEXTCLOUD_WEBDAV_USER,
-  NEXTCLOUD_WEBDAV_APP_PASSWORD,
-  NEXTCLOUD_BASE_FOLDER,
-  NEXTCLOUD_UPLOAD_PREFIX,
-  NEXTCLOUD_PUBLIC_BASE_URL,
-  NEXTCLOUD_PUBLIC_SHARE_TOKEN,
-  NEXTCLOUD_PUBLIC_SHARE_PATH,
-} = process.env;
-
-const NEXTCLOUD_URL =
-  NEXTCLOUD_URL_RAW || deriveNextcloudBaseUrl(NEXTCLOUD_WEBDAV_BASE_URL);
-const NEXTCLOUD_USERNAME = NEXTCLOUD_WEBDAV_USER || NEXTCLOUD_USERNAME_RAW;
-const NEXTCLOUD_PASSWORD = NEXTCLOUD_WEBDAV_APP_PASSWORD || NEXTCLOUD_PASSWORD_RAW;
-const RESOLVED_NEXTCLOUD_BASE_FOLDER =
-  NEXTCLOUD_BASE_FOLDER || NEXTCLOUD_UPLOAD_PREFIX || "/pindeck/media-uploads";
-
-const VARIANTS = {
-  preview: { width: 640, height: 360, suffix: "preview", quality: 78 },
-  small: { width: 320, height: 180, suffix: "w320", quality: 78 },
-  medium: { width: 1280, height: 720, suffix: "w1280", quality: 82 },
-  large: { width: 1920, height: 1080, suffix: "w1920", quality: 84 },
-};
-
-if (!MEDIA_GATEWAY_TOKEN) {
-  console.warn("MEDIA_GATEWAY_TOKEN is not set");
-}
-if (!NEXTCLOUD_URL || !NEXTCLOUD_USERNAME || !NEXTCLOUD_PASSWORD) {
-  console.warn("Nextcloud credentials are not fully set");
 }
 
-app.use(express.json({ limit: "2mb" }));
+function readBodyTextSafe(response) {
+  return response.text().catch(() => "");
+}
 
-const encodePath = (value) =>
-  normalizePath(value)
-    .split("/")
-    .map((segment) => encodeURIComponent(segment))
-    .join("/");
+function toBinaryBody(data) {
+  const bytes = Uint8Array.from(data);
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
 
-const authHeader = (req) => {
-  const header = req.headers.authorization || "";
-  if (header.startsWith("Bearer ")) return header.slice(7);
-  return req.headers["x-media-gateway-token"] || "";
-};
+function toUpstreamHeaders(extra = {}) {
+  return {
+    Authorization: `Bearer ${upstreamToken}`,
+    ...extra,
+  };
+}
 
-const requireAuth = (req, res, next) => {
-  if (!MEDIA_GATEWAY_TOKEN || authHeader(req) !== MEDIA_GATEWAY_TOKEN) {
-    return res.status(401).json({ error: "Unauthorized" });
+async function proxyMultipart(endpoint, fields, file) {
+  if (!upstreamToken) {
+    throw Object.assign(
+      new Error("MEDIA_API_TOKEN or MEDIA_GATEWAY_TOKEN is required for RustFS media API writes"),
+      { statusCode: 500 }
+    );
   }
-  next();
-};
-
-const nextcloudBaseUrl = trimTrailingSlash(NEXTCLOUD_URL);
-const nextcloudPublicBaseUrl = trimTrailingSlash(
-  NEXTCLOUD_PUBLIC_BASE_URL || NEXTCLOUD_URL
-);
-
-const authHeaders = () => ({
-  Authorization:
-    "Basic " +
-    Buffer.from(`${NEXTCLOUD_USERNAME}:${NEXTCLOUD_PASSWORD}`).toString("base64"),
-});
-
-const toWebdavUrl = (path) =>
-  `${nextcloudBaseUrl}/remote.php/dav/files/${encodeURIComponent(
-    NEXTCLOUD_USERNAME
-  )}/${encodePath(path)}`;
-
-const toOcsUrl = () =>
-  `${nextcloudBaseUrl}/ocs/v2.php/apps/files_sharing/api/v1/shares`;
-
-const folderExists = async (path) => {
-  const res = await fetch(toWebdavUrl(path), {
-    method: "PROPFIND",
-    headers: {
-      ...authHeaders(),
-      Depth: "0",
-    },
-  });
-  return [200, 207].includes(res.status);
-};
-
-const safeFilename = (name, fallbackExt = "png") => {
-  const base = String(name || "file").replace(/[^a-zA-Z0-9._-]/g, "_");
-  if (base.includes(".")) return base;
-  return `${base}.${fallbackExt}`;
-};
-
-const rootSharePath = normalizePath(
-  NEXTCLOUD_PUBLIC_SHARE_PATH || RESOLVED_NEXTCLOUD_BASE_FOLDER
-);
-
-const buildPublicUrl = (path) => {
-  const normalized = normalizePath(path);
-  if (!NEXTCLOUD_PUBLIC_SHARE_TOKEN || !rootSharePath) {
-    return null;
+  if (!file) {
+    throw Object.assign(new Error("file required"), { statusCode: 400 });
   }
-  if (normalized !== rootSharePath && !normalized.startsWith(`${rootSharePath}/`)) {
-    return null;
-  }
-  const relative = normalized === rootSharePath ? "" : normalized.slice(rootSharePath.length + 1);
-  if (!relative) return null;
-  return `${nextcloudPublicBaseUrl}/public.php/dav/files/${encodeURIComponent(
-    NEXTCLOUD_PUBLIC_SHARE_TOKEN
-  )}/${encodePath(relative)}`;
-};
 
-const ensureFolder = async (folderPath) => {
-  const parts = normalizePath(folderPath).split("/").filter(Boolean);
-  let current = "";
-  for (const part of parts) {
-    current = current ? `${current}/${part}` : part;
-    const res = await fetch(toWebdavUrl(current), {
-      method: "MKCOL",
-      headers: authHeaders(),
-    });
-    if (![201, 301, 302, 403, 405].includes(res.status)) {
-      const text = await res.text().catch(() => "");
-      if (res.status === 401 && await folderExists(current)) {
-        continue;
-      }
-      throw new Error(`MKCOL failed (${res.status}): ${text.slice(0, 200)}`);
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined && value !== null && value !== "") {
+      form.append(key, String(value));
     }
   }
-};
-
-const shareFile = async (path) => {
-  const res = await fetch(toOcsUrl(), {
-    method: "POST",
-    headers: {
-      ...authHeaders(),
-      "OCS-APIRequest": "true",
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      path: `/${normalizePath(path)}`,
-      shareType: "3",
-      permissions: "1",
+  form.append(
+    "file",
+    new Blob([toBinaryBody(file.buffer)], {
+      type: file.mimetype || "application/octet-stream",
     }),
+    file.originalname || "upload.bin"
+  );
+
+  const response = await fetch(`${upstreamBaseUrl}${endpoint}`, {
+    method: "POST",
+    headers: toUpstreamHeaders(),
+    body: form,
   });
-
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`OCS share failed (${res.status}): ${text.slice(0, 300)}`);
+  const body = await readBodyTextSafe(response);
+  if (!response.ok) {
+    throw Object.assign(
+      new Error(`RustFS media API ${endpoint} failed (${response.status}): ${body.slice(0, 300)}`),
+      { statusCode: response.status }
+    );
   }
+  return JSON.parse(body);
+}
 
-  const urlMatch = text.match(/<url>([^<]+)<\/url>/);
-  const shareUrl = urlMatch ? urlMatch[1] : null;
-  if (!shareUrl) {
-    throw new Error("OCS share response missing public URL");
+async function proxyJson(endpoint, payload) {
+  if (!upstreamToken) {
+    throw Object.assign(
+      new Error("MEDIA_API_TOKEN or MEDIA_GATEWAY_TOKEN is required for RustFS media API writes"),
+      { statusCode: 500 }
+    );
   }
-  return `${shareUrl.replace(/\/$/, "")}/download`;
-};
-
-const uploadBuffer = async (path, contentType, buffer) => {
-  await ensureFolder(normalizePath(path).split("/").slice(0, -1).join("/"));
-
-  const uploadRes = await fetch(toWebdavUrl(path), {
-    method: "PUT",
-    headers: {
-      ...authHeaders(),
-      "Content-Type": contentType || "application/octet-stream",
-    },
-    body: buffer,
+  const response = await fetch(`${upstreamBaseUrl}${endpoint}`, {
+    method: "POST",
+    headers: toUpstreamHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
   });
-
-  if (!uploadRes.ok) {
-    const text = await uploadRes.text().catch(() => "");
-    throw new Error(`Upload failed (${uploadRes.status}) for ${path}: ${text.slice(0, 300)}`);
+  const body = await readBodyTextSafe(response);
+  if (!response.ok) {
+    throw Object.assign(
+      new Error(`RustFS media API ${endpoint} failed (${response.status}): ${body.slice(0, 300)}`),
+      { statusCode: response.status }
+    );
   }
+  return JSON.parse(body);
+}
 
-  return buildPublicUrl(path) || (await shareFile(path));
-};
-
-const buildBaseName = (value) =>
-  String(value || "image")
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 96) || "image";
-
-const createVariantBuffer = (buffer, { width, height, quality }) =>
-  sharp(buffer)
-    .rotate()
-    .trim({ threshold: 10 })
-    .resize({
-      width,
-      height,
-      fit: "cover",
-      position: "attention",
-      withoutEnlargement: false,
-    })
-    .webp({ quality })
-    .toBuffer();
+function sendError(res, error, fallback) {
+  console.error(error);
+  res.status(error?.statusCode || 500).json({ error: error?.message || fallback });
+}
 
 app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
   try {
-    const { userId, folder } = req.body || {};
+    const { userId, folder, bucket } = req.body || {};
     if (!userId) return res.status(400).json({ error: "userId required" });
-    if (!req.file) return res.status(400).json({ error: "file required" });
-
-    const now = new Date();
-    const yyyyMm = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-    const baseFolder =
-      normalizePath(folder) ||
-      normalizePath(`${RESOLVED_NEXTCLOUD_BASE_FOLDER}/${userId}/${yyyyMm}`);
-    const filename = safeFilename(
-      req.file.originalname,
-      req.file.mimetype.split("/")[1] || "png"
+    const payload = await proxyMultipart(
+      "/upload",
+      { userId, folder, bucket: bucket || MEDIA_GATEWAY_BUCKET },
+      req.file
     );
-    const path = `${baseFolder}/${Date.now()}-${filename}`;
-    const publicUrl = await uploadBuffer(path, req.file.mimetype, req.file.buffer);
-
-    return res.json({
-      publicUrl,
-      path: normalizePath(path),
-      mime: req.file.mimetype,
-    });
+    return res.json(payload);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error?.message || "Upload failed" });
+    return sendError(res, error, "Upload failed");
   }
 });
 
 app.post("/import", requireAuth, async (req, res) => {
   try {
-    const { sourceUrl, userId, filename, folder } = req.body || {};
+    const { sourceUrl, userId, filename, folder, bucket } = req.body || {};
     if (!userId) return res.status(400).json({ error: "userId required" });
     if (!sourceUrl) return res.status(400).json({ error: "sourceUrl required" });
-
-    const response = await fetch(sourceUrl);
-    if (!response.ok) {
-      return res
-        .status(400)
-        .json({ error: `Failed to fetch sourceUrl: ${response.status}` });
-    }
-
-    const contentType = response.headers.get("content-type") || "image/png";
-    const buffer = Buffer.from(await response.arrayBuffer());
-    const now = new Date();
-    const yyyyMm = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-    const baseFolder =
-      normalizePath(folder) ||
-      normalizePath(`${RESOLVED_NEXTCLOUD_BASE_FOLDER}/${userId}/${yyyyMm}`);
-    const ext = contentType.split("/")[1] || "png";
-    const resolvedName =
-      filename || `import-${crypto.randomBytes(6).toString("hex")}.${ext}`;
-    const path = `${baseFolder}/${Date.now()}-${safeFilename(resolvedName, ext)}`;
-    const publicUrl = await uploadBuffer(path, contentType, buffer);
-
-    return res.json({
-      publicUrl,
-      path: normalizePath(path),
-      mime: contentType,
+    const payload = await proxyJson("/import", {
+      sourceUrl,
+      userId,
+      filename,
+      folder,
+      bucket: bucket || MEDIA_GATEWAY_BUCKET,
     });
+    return res.json(payload);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error?.message || "Import failed" });
+    return sendError(res, error, "Import failed");
   }
 });
 
 app.post("/process-image", requireAuth, upload.single("file"), async (req, res) => {
   try {
-    const { userId, folder, basename, originalExt, title } = req.body || {};
+    const { userId, folder, basename, originalExt, bucket, title } = req.body || {};
     if (!userId) return res.status(400).json({ error: "userId required" });
-    if (!req.file) return res.status(400).json({ error: "file required" });
-
-    const now = new Date();
-    const yyyy = String(now.getUTCFullYear());
-    const month = String(now.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(now.getUTCDate()).padStart(2, "0");
-    const monthDay = `${month}_${day}`;
-    const requestedFolder =
-      normalizePath(folder) ||
-      normalizePath(`${NEXTCLOUD_BASE_FOLDER}/${yyyy}/${monthDay}`);
-    const resolvedFolder = normalizePath(`${requestedFolder}/gateway-v2`);
-    const ext =
-      String(originalExt || "").replace(/^\./, "") ||
-      req.file.mimetype.split("/")[1] ||
-      "png";
-    const fileBase =
-      buildBaseName(basename || title || req.file.originalname) +
-      `-${crypto.randomBytes(3).toString("hex")}`;
-
-    const originalPath = `${resolvedFolder}/original/${safeFilename(`${fileBase}.${ext}`)}`;
-    const previewPath = `${resolvedFolder}/previews/${fileBase}-preview.webp`;
-    const smallPath = `${resolvedFolder}/low-res/${fileBase}-${VARIANTS.small.suffix}.webp`;
-    const mediumPath = `${resolvedFolder}/high-res/${fileBase}-${VARIANTS.medium.suffix}.webp`;
-    const largePath = `${resolvedFolder}/high-res/${fileBase}-${VARIANTS.large.suffix}.webp`;
-
-    const [previewBuffer, smallBuffer, mediumBuffer, largeBuffer] = await Promise.all([
-      createVariantBuffer(req.file.buffer, VARIANTS.preview),
-      createVariantBuffer(req.file.buffer, VARIANTS.small),
-      createVariantBuffer(req.file.buffer, VARIANTS.medium),
-      createVariantBuffer(req.file.buffer, VARIANTS.large),
-    ]);
-
-    const [
-      imageUrl,
-      previewUrl,
-      smallUrl,
-      mediumUrl,
-      largeUrl,
-    ] = await Promise.all([
-      uploadBuffer(originalPath, req.file.mimetype, req.file.buffer),
-      uploadBuffer(previewPath, "image/webp", previewBuffer),
-      uploadBuffer(smallPath, "image/webp", smallBuffer),
-      uploadBuffer(mediumPath, "image/webp", mediumBuffer),
-      uploadBuffer(largePath, "image/webp", largeBuffer),
-    ]);
-
-    return res.json({
-      imageUrl,
-      previewUrl,
-      storagePath: originalPath,
-      previewStoragePath: previewPath,
-      derivativeUrls: {
-        small: smallUrl,
-        medium: mediumUrl,
-        large: largeUrl,
+    if (!folder) return res.status(400).json({ error: "folder required" });
+    if (!basename) return res.status(400).json({ error: "basename required" });
+    const payload = await proxyMultipart(
+      "/process-image",
+      {
+        userId,
+        folder: normalizePath(folder),
+        basename,
+        originalExt,
+        bucket: bucket || MEDIA_GATEWAY_BUCKET,
+        title,
       },
-      derivativeStoragePaths: {
-        small: smallPath,
-        medium: mediumPath,
-        large: largePath,
-      },
-    });
+      req.file
+    );
+    return res.json(payload);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error?.message || "Image processing failed" });
+    return sendError(res, error, "Image processing failed");
   }
 });
 
-app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "pindeck-media-gateway" });
+app.post("/delete", requireAuth, async (req, res) => {
+  try {
+    const { bucket, objectKeys } = req.body || {};
+    if (!bucket) return res.status(400).json({ error: "bucket required" });
+    if (!Array.isArray(objectKeys)) {
+      return res.status(400).json({ error: "objectKeys array required" });
+    }
+    const payload = await proxyJson("/delete", { bucket, objectKeys });
+    return res.json(payload);
+  } catch (error) {
+    return sendError(res, error, "Delete failed");
+  }
+});
+
+app.get("/health", async (_req, res) => {
+  let upstream = null;
+  try {
+    const response = await fetch(`${upstreamBaseUrl}/health`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    upstream = { ok: response.ok, status: response.status };
+  } catch (error) {
+    upstream = { ok: false, error: error?.message || "unreachable" };
+  }
+
+  res.json({
+    ok: true,
+    service: "pindeck-media-gateway",
+    storageProvider: "rustfs",
+    upstreamBaseUrl,
+    upstream,
+  });
 });
 
 app.listen(PORT, () => {
-  console.log(`media-gateway listening on ${PORT}`);
+  console.log(`media-gateway compatibility proxy listening on ${PORT}; upstream=${upstreamBaseUrl}`);
 });
