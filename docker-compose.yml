@@ -6,6 +6,9 @@ services:
     container_name: discord-bot
     env_file:
       - .env
+    extra_hosts:
+      - "convex-site.serving.cloud:172.18.0.1"
+      - "convex.serving.cloud:172.18.0.1"
     restart: unless-stopped
   media-gateway:
     image: discord-bot:latest

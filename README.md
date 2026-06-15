@@ -2,7 +2,7 @@
 
 Same as `pindeck/services/discord-bot` – standalone deploy. Gateway-based bot using `discord.js`. `/images` commands, ingest, queue moderation.
 
-This repo now also hosts a media-gateway compatibility proxy for new Pindeck image processing. It forwards all writes to the RustFS media API.
+This repo historically hosted a media-gateway compatibility proxy, but new Pindeck image processing now talks to the RustFS media API directly.
 
 ## How it works
 
@@ -28,12 +28,13 @@ Set these in `.env.local` (or `.env`). Same paths as pindeck: loads `.env.local`
 | `PINDECK_INGEST_URL` / `CONVEX_SITE_URL` | No | Defaults from Convex URL |
 | `PINDECK_DISCORD_QUEUE_URL`, `PINDECK_DISCORD_MODERATION_URL` | No | Queue/moderation endpoints |
 | `DISCORD_STATUS_WEBHOOK_URL` | No | Optional status webhook |
-| `MEDIA_GATEWAY_TOKEN` | For media gateway | Bearer token accepted by this compatibility gateway |
-| `MEDIA_API_TOKEN` | For RustFS media API | Bearer token used when forwarding writes to RustFS. Falls back to `MEDIA_GATEWAY_TOKEN` if omitted |
+| `DISCORD_QUEUED_MODERATION_BUTTONS` | No | Post Approve/Deny/Generate buttons when a queued status webhook appears; default `1` |
+| `MEDIA_GATEWAY_TOKEN` | For legacy media gateway | Bearer token accepted by the compatibility gateway if you still run it |
+| `MEDIA_API_TOKEN` | For legacy media gateway | Bearer token used when forwarding writes to RustFS. Falls back to `MEDIA_GATEWAY_TOKEN` if omitted |
 | `RUSTFS_MEDIA_API_URL` / `MEDIA_API_URL` | No | RustFS media API base URL, default `https://media.v1su4.dev` |
 | `MEDIA_GATEWAY_BUCKET` | No | RustFS bucket for Pindeck uploads, default `pindeck` |
 
-Storage is RustFS-only. Configure the media API variables above for all new writes.
+Storage is RustFS-only. Pindeck Convex uses `MEDIA_GATEWAY_URL=https://media.v1su4.dev` and `MEDIA_GATEWAY_TOKEN` for new writes; the bot only needs Convex ingest/queue/moderation access.
 
 ## Install and run
 
@@ -44,9 +45,9 @@ bun start
 
 From pindeck monorepo root you’d run `bun run discord:bot`; here you run `bun start` from this repo.
 
-## Media gateway
+## Legacy media gateway
 
-The media gateway exposes:
+The optional compatibility gateway exposes:
 
 - `GET /health`
 - `POST /process-image`
@@ -55,9 +56,9 @@ The media gateway exposes:
 
 - original
 - `320x180`
-- `640x360`
 - `1280x720`
 - `1920x1080`
+- five sampled palette colors
 
 All durable URLs returned to Pindeck should use the RustFS public shape: `https://s3.v1su4.dev/pindeck/media-uploads/...`.
 
@@ -81,6 +82,8 @@ The media gateway listens on port `4545` by default.
 3. Push to `main` → workflow SSHs in, resets the clone to `origin/main`, runs `docker compose build` and `docker compose up -d` (bot + media gateway on `4545`).
 
 Legacy single-container runs used the name `discord-bot-pinterest`; stop or remove that container if you still have it so it does not fight `docker compose` for the same Discord token.
+
+The Hostinger VPS also serves the public Convex HTTP domains. The bot container must resolve `convex-site.serving.cloud` and `convex.serving.cloud` to the Docker host gateway (`172.18.0.1`) instead of `127.0.1.1`; otherwise Bun fetches to `/ingestExternal` fail from inside the container even when host-level `curl` works. The Compose file pins both names with `extra_hosts`.
 
 Current server:
 

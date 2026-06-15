@@ -1261,6 +1261,7 @@ function printStartupChecklist({
   console.log(`- Ingest target userId: ${fallbackUserId || "none (set PINDECK_USER_ID)"}`);
   console.log(`- Ingest external post parsing: ${ingestFetchExternal ? "enabled" : "disabled"}`);
   console.log(`- Ingest max images per trigger: ${ingestMaxImagesPerPost}`);
+  console.log(`- Auto moderation buttons on queued status: ${postQueuedModerationButtons ? "enabled" : "disabled"}`);
   console.log(`- Auto variation buttons on approved status: ${postVariationButtonsOnApproved ? "enabled" : "disabled"}`);
 }
 
@@ -1295,6 +1296,7 @@ const discordGenerateDefaultCount = Math.min(
 );
 const discordGenerateDefaultMode =
   process.env.DISCORD_GENERATE_DEFAULT_MODE || "shot-variation";
+const postQueuedModerationButtons = process.env.DISCORD_QUEUED_MODERATION_BUTTONS !== "0";
 const postVariationButtonsOnApproved = process.env.DISCORD_APPROVED_VARIATION_BUTTONS !== "0";
 const usingSamplePresets = !process.env.DISCORD_IMAGES_JSON;
 
@@ -1728,21 +1730,32 @@ if (dryRun) {
   });
 
   client.on(Events.MessageCreate, async (message) => {
-    if (!postVariationButtonsOnApproved) return;
+    if (!postQueuedModerationButtons && !postVariationButtonsOnApproved) return;
     if (!message.guildId || !message.webhookId) return;
     if (message.author?.id === client.user.id) return;
     if (!moderationEndpoint || !ingestApiKey || !fallbackIngestUserId) return;
 
     try {
       const { event, imageId } = extractStatusEventAndImageId(message.content || "");
-      if (event !== "approved" || !imageId) return;
+      if (!imageId) return;
+      if (event === "queued" && !postQueuedModerationButtons) return;
+      if (event === "approved" && !postVariationButtonsOnApproved) return;
+      if (event !== "queued" && event !== "approved") return;
 
       const permissionCheck = checkChannelPermissions(message.channel, [PermissionFlagsBits.SendMessages]);
       if (!permissionCheck.ok) {
         console.warn(
-          `Cannot post variation buttons in channel ${message.channelId}:`,
+          `Cannot post Discord status buttons in channel ${message.channelId}:`,
           permissionCheck.missing.join(", ")
         );
+        return;
+      }
+
+      if (event === "queued") {
+        await message.channel.send({
+          content: `Moderate queued image \`${imageId}\``,
+          components: [buildModerationRow(imageId)],
+        });
         return;
       }
 
@@ -1751,7 +1764,7 @@ if (dryRun) {
         components: buildVariationRows(imageId),
       });
     } catch (error) {
-      console.error("Approved-status variation controls error:", error.message);
+      console.error("Discord status controls error:", error.message);
     }
   });
 
