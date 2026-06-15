@@ -4,11 +4,18 @@ Same as `pindeck/services/discord-bot` – standalone deploy. Gateway-based bot 
 
 This repo historically hosted a media-gateway compatibility proxy, but new Pindeck image processing now talks to the RustFS media API directly.
 
+This repo is also the home for long-running Pindeck ingest workers that live
+beside the Discord bot on Hostinger. Docker Compose runs them as sibling
+containers in one deployment stack, not as child processes inside one container.
+
 ## How it works
 
 - **Gateway**: Long-lived connection to Discord. Registers `/images` and handles interactions, reactions, etc.
 - **Commands**: `/images menu`, `/images send`, `/images panel`, `/images import`, `/images review`, `/images approve`, `/images reject`, `/images generate`
 - **Ingest**: Emoji reaction triggers import to Pindeck. Links Convex ingest, queue, moderation endpoints.
+- **Pinterest ingest**: `services/pinterest-ingest` uses `gallery-dl` to watch
+  configured Pinterest boards/profiles, expose RSS feeds, and send new items to
+  Pindeck's moderated `/ingestExternal` path.
 
 ## Environment
 
@@ -33,6 +40,10 @@ Set these in `.env.local` (or `.env`). Same paths as pindeck: loads `.env.local`
 | `MEDIA_API_TOKEN` | For legacy media gateway | Bearer token used when forwarding writes to RustFS. Falls back to `MEDIA_GATEWAY_TOKEN` if omitted |
 | `RUSTFS_MEDIA_API_URL` / `MEDIA_API_URL` | No | RustFS media API base URL, default `https://media.v1su4.dev` |
 | `MEDIA_GATEWAY_BUCKET` | No | RustFS bucket for Pindeck uploads, default `pindeck` |
+| `POLL_INTERVAL_MINUTES` | For Pinterest | Poll interval for watched Pinterest sources; `0` disables background polling |
+| `PUBLIC_BASE_URL` | For Pinterest RSS | External/base URL used in RSS links; localhost is fine for server-local use |
+| `AUTO_SYNC_PINDECK` | For Pinterest | Set `1` to forward new items after each successful run |
+| `GALLERY_DL_RANGE` | No | Optional extraction cap for smoke tests, e.g. `1`; leave blank for full runs |
 
 Storage is RustFS-only. Pindeck Convex uses `MEDIA_GATEWAY_URL=https://media.v1su4.dev` and `MEDIA_GATEWAY_TOKEN` for new writes; the bot only needs Convex ingest/queue/moderation access.
 
@@ -70,6 +81,53 @@ docker compose up -d --build
 
 The media gateway listens on port `4545` by default.
 
+## Pinterest ingest sidecar
+
+The Pinterest worker is packaged at
+[`services/pinterest-ingest`](services/pinterest-ingest). It is a separate
+Python/uv container because `gallery-dl` is the extractor runtime. Compose runs
+it beside the Discord bot and media gateway.
+
+The sidecar keeps only operational state in SQLite. Pindeck still owns durable
+storage: the sidecar resolves the direct Pinterest media URL, sends it to
+`/ingestExternal`, and Pindeck downloads/copies it into RustFS while preserving
+the Pinterest source URL.
+
+Hostinger runtime paths:
+
+- Data: `/docker/pinterest-ingest/data/pinterest-ingest.sqlite`
+- Cookies: `/docker/pinterest-ingest/secrets/pinterest-cookies.txt`
+- Local service URL: `http://127.0.0.1:8095`
+
+Create the runtime folders on the server:
+
+```bash
+mkdir -p /docker/pinterest-ingest/data /docker/pinterest-ingest/secrets
+chmod 700 /docker/pinterest-ingest/secrets
+```
+
+Export browser cookies for Pinterest and place them at:
+
+```bash
+/docker/pinterest-ingest/secrets/pinterest-cookies.txt
+```
+
+The Compose file binds the service to `127.0.0.1:8095` so admin endpoints are
+not public by default. Use SSH or a server-side tool to add sources and run
+syncs:
+
+```bash
+curl http://127.0.0.1:8095/health
+
+curl -X POST http://127.0.0.1:8095/sources \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://www.pinterest.com/profile/board/","name":"reference-board"}'
+
+curl -X POST http://127.0.0.1:8095/runs/reference-board
+curl http://127.0.0.1:8095/feeds/pinterest/reference-board.xml
+curl -X POST http://127.0.0.1:8095/sources/reference-board/sync-pindeck
+```
+
 ## Bot invite
 
 - Scopes: `bot`, `applications.commands`
@@ -79,7 +137,7 @@ The media gateway listens on port `4545` by default.
 
 1. On the VPS: clone this repo (e.g. `/root/discord-bot`), add `.env` with required vars (file is gitignored).
 2. In GitHub: **Actions** secrets — `HOSTINGER_HOST`, `HOSTINGER_USER`, `HOSTINGER_SSH_KEY` (required); `HOSTINGER_APP_PATH` optional if not `/root/discord-bot`.
-3. Push to `main` → workflow SSHs in, resets the clone to `origin/main`, runs `docker compose build` and `docker compose up -d` (bot + media gateway on `4545`).
+3. Push to `main` → workflow SSHs in, resets the clone to `origin/main`, runs `docker compose build` and `docker compose up -d` (bot + media gateway on `4545` + Pinterest ingest on server-local `8095`).
 
 Legacy single-container runs used the name `discord-bot-pinterest`; stop or remove that container if you still have it so it does not fight `docker compose` for the same Discord token.
 
@@ -94,7 +152,8 @@ Current server:
 
 ## Docker
 
-Preferred: use Compose (bot health on **8080**, media gateway on **4545**):
+Preferred: use Compose (bot health on **8080**, media gateway on **4545**,
+Pinterest ingest on server-local **8095**):
 
 ```bash
 docker compose up -d --build
@@ -109,6 +168,8 @@ docker run -d --restart unless-stopped --name discord-bot -p 8080:8080 --env-fil
 
 - **Bot health check**: `GET http://your-server:8080/health` → `{"ok":true,"service":"pindeck-discord-bot"}`.
 - **Media gateway**: `GET http://your-server:4545/health` (Compose sets `HEALTH_PORT=4545` for that service).
+- **Pinterest ingest**: `GET http://127.0.0.1:8095/health` on the server.
 - `discord-bot` runs as the long-lived Discord worker container.
 - `pindeck-media-gateway` exposes `GET /health` on port `4545`.
+- `pindeck-pinterest-ingest` exposes RSS/source/run endpoints on server-local port `8095`.
 - `docker compose ps` is the quickest way to verify both services after a deploy.

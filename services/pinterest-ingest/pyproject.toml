@@ -1,0 +1,20 @@
+[project]
+name = "pindeck-pinterest-ingest"
+version = "0.1.0"
+description = "Pinterest gallery-dl feed and Pindeck ingest sidecar"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.6",
+  "gallery-dl>=1.29.0",
+  "httpx>=0.28.1",
+  "uvicorn[standard]>=0.34.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

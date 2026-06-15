@@ -24,3 +24,22 @@ services:
     ports:
       - "4545:4545"
     restart: unless-stopped
+  pinterest-ingest:
+    image: pindeck-pinterest-ingest:latest
+    build:
+      context: ./services/pinterest-ingest
+    container_name: pindeck-pinterest-ingest
+    env_file:
+      - .env
+    environment:
+      DATABASE_PATH: /data/pinterest-ingest.sqlite
+      PINTEREST_COOKIES_PATH: /secrets/pinterest-cookies.txt
+    volumes:
+      - /docker/pinterest-ingest/data:/data
+      - /docker/pinterest-ingest/secrets:/secrets:ro
+    ports:
+      - "127.0.0.1:8095:8080"
+    extra_hosts:
+      - "convex-site.serving.cloud:172.18.0.1"
+      - "convex.serving.cloud:172.18.0.1"
+    restart: unless-stopped
