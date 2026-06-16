@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Settings
 from .db import Store
@@ -43,6 +44,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Pindeck Pinterest Ingest", version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://pindeck.dev",
+        "https://www.pindeck.dev",
+        "http://localhost:4000",
+        "http://127.0.0.1:4000",
+    ],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")

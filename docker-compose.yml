@@ -39,6 +39,16 @@ services:
       - /docker/pinterest-ingest/secrets:/secrets:ro
     ports:
       - "127.0.0.1:8095:8080"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.pinterest-ingest.rule=Host(`rssbridge.serving.cloud`) && PathPrefix(`/pinterest-ingest`)
+      - traefik.http.routers.pinterest-ingest.priority=100
+      - traefik.http.routers.pinterest-ingest.entrypoints=websecure
+      - traefik.http.routers.pinterest-ingest.tls.certresolver=letsencrypt
+      - traefik.http.routers.pinterest-ingest.middlewares=pinterest-ingest-strip
+      - traefik.http.routers.pinterest-ingest.service=pinterest-ingest
+      - traefik.http.middlewares.pinterest-ingest-strip.stripprefix.prefixes=/pinterest-ingest
+      - traefik.http.services.pinterest-ingest.loadbalancer.server.port=8080
     extra_hosts:
       - "convex-site.serving.cloud:172.18.0.1"
       - "convex.serving.cloud:172.18.0.1"
