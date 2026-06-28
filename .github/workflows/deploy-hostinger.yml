@@ -24,6 +24,11 @@ jobs:
           host: ${{ secrets.HOSTINGER_HOST }}
           username: ${{ secrets.HOSTINGER_USER }}
           key: ${{ secrets.HOSTINGER_SSH_KEY }}
+          # GitHub-hosted runners can occasionally take >30s to establish the
+          # first TCP connection to the Hostinger VPS. Keep the remote command
+          # budget separate from the SSH dial timeout so transient network lag
+          # does not fail before the deploy script starts.
+          timeout: 120s
           command_timeout: 20m
           script_stop: true
           script: |
