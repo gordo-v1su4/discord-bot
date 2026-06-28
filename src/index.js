@@ -22,6 +22,7 @@ import {
 const PANEL_MARKER_PREFIX = "[PINDECK_IMAGE_PANEL]";
 const MOD_ACTION_PREFIX = "pindeck_mod";
 const VAR_ACTION_PREFIX = "pindeck_var";
+const VAR_SKIP_MODE = "none";
 const MAX_MENU_ITEMS = 25;
 const HARD_MAX_IMPORTED_IMAGES_PER_MESSAGE = 10;
 const DEFAULT_QUEUE_REVIEW_LIMIT = 5;
@@ -86,6 +87,8 @@ function loadLocalEnv() {
     path.resolve(cwd, "../../.env"),
     path.resolve(cwd, "../.env.local"),
     path.resolve(cwd, "../.env"),
+    path.resolve(cwd, "../pindeck/.env.local"),
+    path.resolve(cwd, "../pindeck/.env"),
   ];
 
   for (const candidate of candidates) {
@@ -552,8 +555,9 @@ function extractImageLinksFromMessage(message) {
   const content = message.content || "";
   const urlMatches = content.match(/https?:\/\/\S+/g) || [];
   for (const match of urlMatches) {
-    if (/\.(png|jpe?g|webp|gif|bmp|svg)(\?|$)/i.test(match)) {
-      urls.push(match);
+    const cleaned = cleanCapturedUrl(match);
+    if (/\.(png|jpe?g|webp|gif|bmp|svg)(\?|$)/i.test(cleaned)) {
+      urls.push(cleaned);
     }
   }
 
@@ -562,11 +566,11 @@ function extractImageLinksFromMessage(message) {
 
 function extractAllUrls(text) {
   if (!text) return [];
-  return text.match(/https?:\/\/\S+/g) || [];
+  return (text.match(/https?:\/\/\S+/g) || []).map(cleanCapturedUrl);
 }
 
 function cleanCapturedUrl(raw) {
-  return String(raw || "").replace(/[),.;!?]+$/g, "").trim();
+  return String(raw || "").replace(/[>\]),.;!?]+$/g, "").trim();
 }
 
 function looksLikeImageUrl(url) {
@@ -1074,7 +1078,7 @@ function parseVariationCustomId(customId) {
   if (!customId?.startsWith(`${VAR_ACTION_PREFIX}:`)) return null;
   const [, mode, imageId] = customId.split(":");
   if (!mode || !imageId) return null;
-  if (!VARIATION_MODE_OPTIONS.some((item) => item.mode === mode)) return null;
+  if (mode !== VAR_SKIP_MODE && !VARIATION_MODE_OPTIONS.some((item) => item.mode === mode)) return null;
   return { mode, imageId };
 }
 
@@ -1091,6 +1095,10 @@ function buildVariationRows(imageId) {
     new ButtonBuilder()
       .setCustomId(buildVariationCustomId(VARIATION_MODE_OPTIONS[5].mode, imageId))
       .setLabel(VARIATION_MODE_OPTIONS[5].label)
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(buildVariationCustomId(VAR_SKIP_MODE, imageId))
+      .setLabel("Done")
       .setStyle(ButtonStyle.Secondary)
   );
   return [firstRow, secondRow];
@@ -1335,6 +1343,10 @@ if (dryRun) {
     ingestFetchExternal,
     ingestMaxImagesPerPost,
   });
+  if (process.env.DISCORD_DRY_RUN_REGISTER !== "1") {
+    console.log("Dry run complete. Set DISCORD_DRY_RUN_REGISTER=1 to test slash command registration.");
+    process.exit(0);
+  }
   registerCommands({ token, clientId, guildId, commands })
     .then(() => {
       console.log("Dry run complete.");
@@ -1461,10 +1473,10 @@ if (dryRun) {
         }
 
         if (subcommand === "import") {
-          if (!ingestEndpoint || !ingestApiKey) {
+          if (!ingestEndpoint || !ingestApiKey || !fallbackIngestUserId) {
             await interaction.reply({
               content:
-                "Ingest is not configured. Set PINDECK_INGEST_URL (or CONVEX_SITE_URL) and INGEST_API_KEY in .env.local.",
+                "Ingest is not configured. Set PINDECK_INGEST_URL (or CONVEX_SITE_URL), INGEST_API_KEY, and PINDECK_USER_ID in .env.local.",
               flags: MessageFlags.Ephemeral,
             });
             return;
@@ -1649,6 +1661,30 @@ if (dryRun) {
         }
 
         if (parsedVariation) {
+          if (parsedVariation.mode === VAR_SKIP_MODE) {
+            try {
+              if (interaction.message?.editable) {
+                await interaction.update({
+                  content: `No variations queued for \`${parsedVariation.imageId}\`.`,
+                  components: [],
+                });
+              } else {
+                await interaction.reply({
+                  content: `No variations queued for \`${parsedVariation.imageId}\`.`,
+                  flags: MessageFlags.Ephemeral,
+                });
+              }
+            } catch (error) {
+              if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({
+                  content: `No variations queued for \`${parsedVariation.imageId}\`.`,
+                  flags: MessageFlags.Ephemeral,
+                });
+              }
+            }
+            return;
+          }
+
           try {
             const result = await moderateDiscordImage({
               moderationEndpoint,
@@ -1797,13 +1833,28 @@ if (dryRun) {
 
       // New ingest behavior: custom reaction on any image message imports into Pindeck
       if (!isReactionIngestTrigger(reaction, ingestTriggers)) return;
-      if (!ingestEndpoint || !ingestApiKey) {
+      if (!ingestEndpoint || !ingestApiKey || !fallbackIngestUserId) {
         logStructured("warn", "reaction_ingest_skipped_not_configured", {
           reaction: describeReaction(reaction),
           messageId: message.id,
           channelId: message.channelId,
           guildId: message.guildId || "dm",
+          hasIngestEndpoint: Boolean(ingestEndpoint),
+          hasIngestApiKey: Boolean(ingestApiKey),
+          hasTargetUserId: Boolean(fallbackIngestUserId),
         });
+        if (ingestConfirmations) {
+          const permissionCheck = checkChannelPermissions(message.channel, [PermissionFlagsBits.SendMessages]);
+          if (permissionCheck.ok) {
+            await message.channel.send(
+              `Pindeck ingest is not configured for pin reactions. Missing: ${[
+                !ingestEndpoint ? "ingest endpoint" : "",
+                !ingestApiKey ? "INGEST_API_KEY" : "",
+                !fallbackIngestUserId ? "PINDECK_USER_ID" : "",
+              ].filter(Boolean).join(", ")}.`
+            );
+          }
+        }
         return;
       }
 
