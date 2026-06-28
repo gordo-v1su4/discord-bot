@@ -1930,6 +1930,13 @@ if (dryRun) {
             `Imported ${imported} image(s) from message ${message.id} into Pindeck for <@${user.id}>.${postMeta.sref ? ` sref: ${postMeta.sref}.` : ""}`
           );
         }
+      } else if (imageLinks.length > 0 && ingestConfirmations) {
+        const permissionCheck = checkChannelPermissions(message.channel, [PermissionFlagsBits.SendMessages]);
+        if (permissionCheck.ok) {
+          await message.channel.send(
+            `Pindeck import failed for message ${message.id}. I found ${imageLinks.length} image URL(s), but none were accepted. Check bot logs for \`reaction_ingest_failed\`.`
+          );
+        }
       }
     } catch (error) {
       console.error("Reaction handler error:", error.message);
